@@ -66,7 +66,7 @@ namespace PinTray
         DateTime unpluggedAt;
         bool fullNotified;
         /// While charging the bolt fills up again and again.
-        static readonly float[] AnimFill = { 0.2f, 0.4f, 0.6f, 0.8f, 1f, 1f };
+        static readonly float[] AnimFill = { 0.15f, 0.35f, 0.55f, 0.75f, 1f, 1f };
         readonly Timer anim = new Timer();
         Icon[] animIcons;
         IntPtr[] animHandles;
@@ -132,7 +132,7 @@ namespace PinTray
                 animIcons = new Icon[AnimFill.Length];
                 animHandles = new IntPtr[AnimFill.Length];
                 for (int i = 0; i < AnimFill.Length; i++)
-                    using (Bitmap bmp = RenderBolt(Green, AnimFill[i]))
+                    using (Bitmap bmp = RenderCharging(Green, AnimFill[i]))
                     {
                         animHandles[i] = bmp.GetHicon();
                         animIcons[i] = Icon.FromHandle(animHandles[i]);
@@ -394,26 +394,14 @@ namespace PinTray
             tray.ShowBalloonTip(5000, "Sắp hết pin", name + " còn " + pct + "%. Hãy sạc.", ToolTipIcon.Warning);
         }
 
-        /// Draws the bolt; with fill below 1 only the bottom part is bright, the rest dimmed.
-        static void DrawBolt(Graphics g, Color color, Size sz, float fill)
+        /// A lightning bolt fitted into a box.
+        static PointF[] BoltIn(RectangleF box)
         {
-            // Bolt in a 0..1 box, then scaled to the icon (a little narrower than tall).
             float[,] p = { { 0.62f, 0.00f }, { 0.16f, 0.58f }, { 0.46f, 0.58f }, { 0.36f, 1.00f },
                            { 0.84f, 0.38f }, { 0.54f, 0.38f }, { 0.66f, 0.00f } };
-            float w = sz.Width * 0.85f, h = sz.Height;
-            float ox = (sz.Width - w) / 2;
             var pts = new PointF[p.GetLength(0)];
-            for (int i = 0; i < pts.Length; i++) pts[i] = new PointF(ox + p[i, 0] * w, p[i, 1] * h);
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using (var bright = new SolidBrush(color))
-            {
-                if (fill >= 1) { g.FillPolygon(bright, pts); return; }
-                using (var dim = new SolidBrush(Color.FromArgb(90, color)))
-                    g.FillPolygon(dim, pts);
-                g.SetClip(new RectangleF(0, h * (1 - fill), sz.Width, h * fill));
-                g.FillPolygon(bright, pts);
-                g.ResetClip();
-            }
+            for (int i = 0; i < pts.Length; i++) pts[i] = new PointF(box.X + p[i, 0] * box.Width, box.Y + p[i, 1] * box.Height);
+            return pts;
         }
 
         /// Slate outline of the full-battery icon; the core takes the state colour.
@@ -431,9 +419,11 @@ namespace PinTray
             return p;
         }
 
-        /// A full battery standing upright (unlike Windows' own sideways one): rounded slate
-        /// outline, terminal on top, and a core in the state colour with a small gap around it.
-        static void DrawFullBattery(Graphics g, Color color, Size sz)
+        /// A battery standing upright (unlike Windows' own sideways one): rounded slate outline,
+        /// terminal on top, and a core in the state colour with a small gap around it. The core is
+        /// filled up to `fill` (0..1); with `bolt`, a lightning bolt is cut out of it, so the
+        /// taskbar shows through on light and dark taskbars alike.
+        static void DrawBattery(Graphics g, Color color, Size sz, float fill, bool bolt)
         {
             float w = sz.Width, h = sz.Height;
             float stroke = Math.Max(1.5f, w / 11f);
@@ -454,19 +444,32 @@ namespace PinTray
                     g.DrawPath(outline, path);
                 float gap = stroke * 0.7f;
                 var inner = RectangleF.Inflate(body, -(stroke + gap), -(stroke + gap));
+                if (fill < 1) g.SetClip(new RectangleF(0, inner.Bottom - inner.Height * fill, w, inner.Height * fill + 1));
                 using (var path = Rounded(inner, stroke * 0.7f))
                     g.FillPath(core, path);
+                g.ResetClip();
+                if (bolt)
+                {
+                    float bw = inner.Width * 1.05f, bh = inner.Height * 0.80f;
+                    var box = new RectangleF(inner.X + (inner.Width - bw) / 2, inner.Y + (inner.Height - bh) / 2, bw, bh);
+                    var mode = g.CompositingMode;
+                    g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                    using (var clear = new SolidBrush(Color.Transparent))
+                        g.FillPolygon(clear, BoltIn(box));
+                    g.CompositingMode = mode;
+                }
             }
         }
 
-        public static Bitmap RenderBolt(Color color, float fill)
+        /// One frame of the charging animation: the core filled to `fill`, bolt cut out.
+        public static Bitmap RenderCharging(Color color, float fill)
         {
             Size sz = SystemInformation.SmallIconSize;
             var bmp = new Bitmap(sz.Width, sz.Height);
             using (var g = Graphics.FromImage(bmp))
             {
                 g.Clear(Color.Transparent);
-                DrawBolt(g, color, sz, fill);
+                DrawBattery(g, color, sz, fill, true);
             }
             return bmp;
         }
@@ -482,12 +485,12 @@ namespace PinTray
                 g.Clear(Color.Transparent);
                 if (text == FullBattery)
                 {
-                    DrawFullBattery(g, color, sz);
+                    DrawBattery(g, color, sz, 1f, false);
                     return bmp;
                 }
                 if (text == Bolt)
                 {
-                    DrawBolt(g, color, sz, 1f);
+                    DrawBattery(g, color, sz, 1f, true);
                     return bmp;
                 }
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
