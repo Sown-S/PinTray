@@ -1,0 +1,44 @@
+# Builds and tests PinTray on every push and pull request.
+# Pushing a tag such as v1.0.0 also publishes a GitHub release with PinTray.exe and its SHA-256,
+# so the released file is always built here from the tagged source, never on someone's PC.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test
+        shell: pwsh
+        run: ./build.ps1 -Test
+
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash dist/PinTray.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  PinTray.exe" | Out-File dist/SHA256SUMS.txt -Encoding ascii
+          Get-Content dist/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PinTray
+          path: |
+            dist/PinTray.exe
+            dist/SHA256SUMS.txt
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME dist/PinTray.exe dist/SHA256SUMS.txt --title "PinTray $env:GITHUB_REF_NAME" --generate-notes

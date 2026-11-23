@@ -1,0 +1,354 @@
+using System;
+using System.Drawing;
+using System.Drawing.Text;
+using System.Globalization;
+using System.Windows.Forms;
+
+namespace PinTray
+{
+    /// The notification-area icon of one device, and everything PinTray keeps about it:
+    /// saved level, history, time-left estimate, charge reminder, stuck-receiver check.
+    class DeviceTray : IDisposable
+    {
+        /// No answer for this long means the device is asleep or off.
+        static readonly TimeSpan Silent = TimeSpan.FromSeconds(10);
+        /// The device was used but its receiver stayed silent this long: the receiver is stuck.
+        static readonly TimeSpan StuckAfter = TimeSpan.FromSeconds(30);
+        static readonly Color Green = Color.FromArgb(0x2E, 0xCC, 0x40);
+        static readonly Color Red = Color.FromArgb(0xFF, 0x41, 0x36);
+        static readonly Color Orange = Color.FromArgb(0xFF, 0x98, 0x00);
+        /// Icon text that stands for the lightning-bolt drawing.
+        const string Bolt = "⚡";
+
+        readonly App app;
+        readonly string key;
+        string name;
+        readonly NotifyIcon tray = new NotifyIcon();
+        readonly Estimator est;
+        readonly ToolStripMenuItem statusItem = new ToolStripMenuItem();
+        readonly ToolStripMenuItem estimateItem = new ToolStripMenuItem();
+        readonly ToolStripMenuItem seenItem = new ToolStripMenuItem();
+        readonly ToolStripMenuItem vendorItem = new ToolStripMenuItem();
+        IntPtr iconHandle = IntPtr.Zero;
+        string lastIconKey;
+        int warnedAt = 101; // lowest warning level already shown since the last charge
+
+        // Saved reading: what was last logged and when it was last confirmed live.
+        int savedPercent, savedState;
+        DateTime savedAt = DateTime.MinValue;
+        DateTime lastTick = DateTime.Now;
+        DateTime lastPersist = DateTime.Now;
+
+        bool wasWired;
+        DateTime wiredSince;
+        bool reminded;
+
+        DateTime stuckUseSince = DateTime.MinValue; // first use seen during the current silence
+        bool stuck, stuckWarned, watching;
+        string watchMatch;
+
+        public DeviceTray(App app, DeviceStatus first)
+        {
+            this.app = app;
+            key = first.Key;
+            name = Store.Get(key, "Name", first.Name);
+            savedPercent = Store.GetInt(key, "LastPercent", -1);
+            savedState = Store.GetInt(key, "LastState", Reading.OnBattery);
+            long ticks = Store.GetLong(key, "LastSeen", 0);
+            if (ticks > 0) savedAt = new DateTime(ticks);
+            est = new Estimator(key);
+            est.Load();
+
+            var menu = new ContextMenuStrip();
+            foreach (var item in new[] { statusItem, estimateItem, seenItem })
+            {
+                item.Enabled = false;
+                menu.Items.Add(item);
+            }
+            menu.Items.Add(new ToolStripSeparator());
+            vendorItem.Click += delegate { App.Open(vendorItem.Tag as string); };
+            menu.Items.Add(vendorItem);
+            app.AddCommonItems(menu);
+            tray.ContextMenuStrip = menu;
+            Update(first, DateTime.Now);
+            tray.Visible = true;
+        }
+
+        public void Save()
+        {
+            if (savedAt != DateTime.MinValue) Store.Set(key, "LastSeen", savedAt.Ticks);
+            est.Save();
+        }
+
+        public void Dispose()
+        {
+            Save();
+            if (watching) app.Watcher.Watch(watchMatch, false);
+            tray.Visible = false;
+            tray.Dispose();
+            if (iconHandle != IntPtr.Zero) Native.DestroyIcon(iconHandle);
+        }
+
+        static string Hours(double h)
+        {
+            if (h < 1) return Math.Max(1, (int)Math.Round(h * 60)) + " phút";
+            if (h < 10) return h.ToString("0.#", CultureInfo.GetCultureInfo("vi-VN")) + " giờ";
+            return Math.Round(h).ToString(CultureInfo.InvariantCulture) + " giờ";
+        }
+
+        static string Ago(DateTime t)
+        {
+            if (t == DateTime.MinValue) return "chưa rõ";
+            TimeSpan d = DateTime.Now - t;
+            if (d.TotalMinutes < 1) return "vừa xong";
+            if (d.TotalHours < 1) return (int)d.TotalMinutes + " phút trước";
+            if (d.TotalDays < 1) return (int)d.TotalHours + " giờ trước";
+            return t.ToString("dd/MM HH:mm");
+        }
+
+        void Watch(bool on)
+        {
+            if (on == watching || watchMatch == null) return;
+            watching = on;
+            app.Watcher.Watch(watchMatch, on);
+        }
+
+        /// Keeps the saved state, the history, the estimate, the charge reminder and the stuck check up to date.
+        void Track(DeviceStatus s, DateTime now, bool live)
+        {
+            double dt = (now - lastTick).TotalSeconds;
+            lastTick = now;
+            if (live && dt > 0 && dt < 5) est.AwakeSeconds += dt;
+
+            // Cable in / out.
+            if (s.Wired && !wasWired)
+            {
+                wiredSince = now; reminded = false;
+                est.Reset();
+                warnedAt = 101;
+                Store.Log(name, "cam_cap_sac", savedPercent);
+            }
+            else if (!s.Wired && wasWired)
+            {
+                Store.Log(name, "rut_cap", -1);
+            }
+            wasWired = s.Wired;
+
+            // Charge reminder.
+            int remind = app.RemindMinutes;
+            if (s.Wired && !reminded && remind > 0 && (now - wiredSince).TotalMinutes >= remind)
+            {
+                reminded = true;
+                tray.ShowBalloonTip(10000, "Có thể rút sạc", name + " đã cắm sạc " + Hours((now - wiredSince).TotalHours) + ". Bạn có thể rút cáp.", ToolTipIcon.Info);
+            }
+
+            // A new live reading: save it, log it, count drops for the estimate.
+            if (live)
+            {
+                Reading r = s.Last;
+                // A change seen right after a gap (PinTray closed, PC off) happened at an unknown time.
+                bool continuous = savedAt != DateTime.MinValue && (now - savedAt).TotalMinutes < 2;
+                if (r.Percent != savedPercent || r.State != savedState)
+                {
+                    bool fell = r.State == Reading.OnBattery && savedPercent >= 0 && r.Percent < savedPercent;
+                    if (fell && continuous) est.Dropped(r.Percent);
+                    else if (fell || r.State == Reading.Charging || (savedPercent >= 0 && r.Percent > savedPercent)) est.Reset();
+                    Store.Log(name, r.State == Reading.Charging ? "dang_sac" : r.State == Reading.OnPower ? "cam_nguon" : "dung_pin", r.Percent);
+                    savedPercent = r.Percent; savedState = r.State;
+                    Store.Set(key, "LastPercent", r.Percent);
+                    Store.Set(key, "LastState", r.State);
+                }
+                savedAt = now;
+            }
+            if ((now - lastPersist).TotalSeconds >= 60)
+            {
+                lastPersist = now;
+                Save();
+            }
+
+            // Stuck receiver: silent while the device itself is being used.
+            watchMatch = s.RawInputMatch;
+            bool silent = s.Present && !s.Wired && !live && watchMatch != null;
+            if (!silent)
+            {
+                if (stuck) Store.Log(name, "receiver_hoat_dong_lai", -1);
+                Watch(false);
+                stuckUseSince = DateTime.MinValue;
+                stuck = false; stuckWarned = false;
+                return;
+            }
+            if (stuck) return; // already known; watching stays off to save CPU
+            Watch(true);
+            DateTime used = app.Watcher.LastUse(watchMatch);
+            if (used > s.LastFrame && (now - used).TotalSeconds < 3)
+            {
+                if (stuckUseSince == DateTime.MinValue) stuckUseSince = now;
+                if (now - stuckUseSince >= StuckAfter)
+                {
+                    stuck = true;
+                    Watch(false);
+                    Store.Log(name, "receiver_bi_ket", -1);
+                    if (!stuckWarned)
+                    {
+                        stuckWarned = true;
+                        tray.ShowBalloonTip(10000, "Receiver không gửi pin",
+                            name + " vẫn chạy nhưng receiver không báo pin. Hãy rút ra rồi cắm lại receiver.", ToolTipIcon.Warning);
+                    }
+                }
+            }
+            else if (used <= s.LastFrame || (now - used).TotalSeconds > 10)
+            {
+                stuckUseSince = DateTime.MinValue; // not in use: it is just asleep
+            }
+        }
+
+        public void Update(DeviceStatus s, DateTime now)
+        {
+            if (s.Name != name && s.HasReading)
+            {
+                name = s.Name; // the model is known once the device has answered
+                Store.Set(key, "Name", name);
+            }
+            bool live = s.HasReading && now - s.LastFrame <= Silent;
+            Track(s, now, live);
+
+            // Shown level: the live one, else the saved one.
+            bool has = s.HasReading || savedPercent >= 0;
+            Reading r = s.HasReading ? s.Last : new Reading { Percent = savedPercent, State = savedState };
+
+            string text, tip, status, estimate = "";
+            Color color;
+            double hoursLeft = has ? est.HoursLeft(r.Percent) : -1;
+            if (has && !s.Wired)
+                estimate = hoursLeft > 0 ? "Còn khoảng " + Hours(hoursLeft) + " dùng" : "Thời gian còn lại: chưa đủ dữ liệu";
+
+            if (s.Wired)
+            {
+                // On the cable the device may send no level: show a bolt, keep the last wireless level.
+                text = Bolt; color = Green;
+                string before = has ? " – trước khi cắm " + r.Percent + "%" : "";
+                tip = name + ": đang sạc qua cáp" + before;
+                status = "Đang sạc qua cáp" + before;
+                estimate = "Đã cắm " + Hours((now - wiredSince).TotalHours)
+                    + (app.RemindMinutes > 0 ? ", nhắc rút sau " + Hours(app.RemindMinutes / 60.0) : "");
+            }
+            else if (!s.Present)
+            {
+                text = "–"; color = Color.Gray;
+                tip = name + ": không thấy receiver";
+                status = "Không thấy receiver";
+            }
+            else if (stuck)
+            {
+                text = "!"; color = Orange;
+                tip = name + ": receiver kẹt – rút ra cắm lại";
+                status = "Receiver không gửi pin – rút ra cắm lại";
+            }
+            else if (!has)
+            {
+                text = "?"; color = Color.Gray;
+                tip = name + ": đang chờ dữ liệu pin";
+                status = "Đang chờ dữ liệu pin (hãy dùng thiết bị)";
+            }
+            else
+            {
+                text = r.Percent.ToString(CultureInfo.InvariantCulture);
+                string state = r.State == Reading.Charging ? "đang sạc" : r.State == Reading.OnPower ? "cắm nguồn" : "dùng pin";
+                if (!live) state = "đang ngủ, mức cuối";
+                tip = name + ": " + r.Percent + "% (" + state + ")";
+                if (live && hoursLeft > 0) tip += " · còn ~" + Hours(hoursLeft);
+                status = "Pin " + r.Percent + "% – " + state;
+                if (!live) color = Color.Gray;
+                else if (r.State == Reading.Charging) color = Green;
+                else if (r.Percent <= 20) color = Red;
+                else color = App.LightTaskbar() ? Color.Black : Color.White;
+
+                // Low-battery notice at 20 % and 10 %, once each until charged.
+                if (r.State == Reading.Charging || r.Percent > 20) warnedAt = 101;
+                else if (live && r.Percent <= 10 && warnedAt > 10) { warnedAt = 10; Warn(r.Percent); }
+                else if (live && r.Percent <= 20 && warnedAt > 20) { warnedAt = 20; Warn(r.Percent); }
+            }
+
+            if (tip.Length > 63) tip = tip.Substring(0, 63);
+            tray.Text = tip;
+            statusItem.Text = name + " – " + status;
+            estimateItem.Text = estimate;
+            estimateItem.Visible = estimate.Length > 0;
+            seenItem.Text = "Cập nhật: " + (live ? "vừa xong" : Ago(savedAt));
+            seenItem.Visible = !s.Wired && has;
+            vendorItem.Visible = s.VendorApp != null;
+            vendorItem.Text = "Mở app " + name;
+            vendorItem.Tag = s.VendorApp;
+
+            string iconKey = text + "|" + color.ToArgb();
+            if (iconKey == lastIconKey) return;
+            lastIconKey = iconKey;
+            SetIcon(text, color);
+        }
+
+        void Warn(int pct)
+        {
+            tray.ShowBalloonTip(5000, "Sắp hết pin", name + " còn " + pct + "%. Hãy sạc.", ToolTipIcon.Warning);
+        }
+
+        static void DrawBolt(Graphics g, Brush brush, Size sz)
+        {
+            // Bolt in a 0..1 box, then scaled to the icon (a little narrower than tall).
+            float[,] p = { { 0.62f, 0.00f }, { 0.16f, 0.58f }, { 0.46f, 0.58f }, { 0.36f, 1.00f },
+                           { 0.84f, 0.38f }, { 0.54f, 0.38f }, { 0.66f, 0.00f } };
+            float w = sz.Width * 0.85f, h = sz.Height;
+            float ox = (sz.Width - w) / 2;
+            var pts = new PointF[p.GetLength(0)];
+            for (int i = 0; i < pts.Length; i++) pts[i] = new PointF(ox + p[i, 0] * w, p[i, 1] * h);
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.FillPolygon(brush, pts);
+        }
+
+        /// Draws the icon: a number (or symbol) as large as fits, or the bolt.
+        public static Bitmap Render(string text, Color color)
+        {
+            Size sz = SystemInformation.SmallIconSize;
+            var bmp = new Bitmap(sz.Width, sz.Height);
+            using (var g = Graphics.FromImage(bmp))
+            using (var brush = new SolidBrush(color))
+            {
+                g.Clear(Color.Transparent);
+                if (text == Bolt)
+                {
+                    DrawBolt(g, brush, sz);
+                    return bmp;
+                }
+                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                var fmt = new StringFormat(StringFormat.GenericTypographic);
+                fmt.Alignment = StringAlignment.Center;
+                fmt.LineAlignment = StringAlignment.Center;
+                float size = sz.Height;
+                Font font = null;
+                while (size > 4)
+                {
+                    if (font != null) font.Dispose();
+                    font = new Font("Segoe UI", size, FontStyle.Bold, GraphicsUnit.Pixel);
+                    SizeF m = g.MeasureString(text, font, 1000, fmt);
+                    if (m.Width <= sz.Width + 1 && m.Height <= sz.Height + 2) break;
+                    size -= 0.5f;
+                }
+                g.DrawString(text, font, brush, new RectangleF(0, 0, sz.Width, sz.Height + 1), fmt);
+                font.Dispose();
+            }
+            return bmp;
+        }
+
+        void SetIcon(string text, Color color)
+        {
+            using (Bitmap bmp = Render(text, color))
+            {
+                IntPtr h = bmp.GetHicon();
+                Icon old = tray.Icon;
+                tray.Icon = Icon.FromHandle(h);
+                if (old != null) old.Dispose();
+                if (iconHandle != IntPtr.Zero) Native.DestroyIcon(iconHandle);
+                iconHandle = h;
+            }
+        }
+    }
+}
