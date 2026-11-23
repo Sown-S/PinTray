@@ -18,6 +18,7 @@ namespace PinTray.Tests
             AttackShark();
             Estimate();
             ChargeLearning();
+            Colours();
             Console.WriteLine(fails == 0 ? "All tests passed." : fails + " test(s) failed.");
             return fails == 0 ? 0 : 1;
         }
@@ -36,6 +37,17 @@ namespace PinTray.Tests
             Check(!AttackSharkDriver.Decode(new byte[] { 3, 0x10, 0x40, 1, 200 }, 5, out r, out model), "level over 100 is rejected");
             Check(!AttackSharkDriver.Decode(new byte[] { 3, 0x10, 0x40 }, 3, out r, out model), "short frame is rejected");
             Check(AttackSharkDriver.ModelName(0x10) == "Attack Shark R1", "model marker 10 = R1");
+        }
+
+        static void Colours()
+        {
+            var white = System.Drawing.Color.White;
+            var red = DeviceTray.LevelColor(10, false);
+            var yellow = DeviceTray.LevelColor(50, false);
+            Check(DeviceTray.LevelColor(60, false) == white && DeviceTray.LevelColor(90, false) == white, "colour: 60-90 % white");
+            Check(DeviceTray.LevelColor(30, false) == yellow && yellow != white && yellow != red, "colour: 30-50 % yellow");
+            Check(DeviceTray.LevelColor(20, false) == red && red.R == 0xFF && red.G < 0x80, "colour: 10-20 % red");
+            Check(DeviceTray.LevelColor(60, true) == System.Drawing.Color.Black, "colour: black on a light taskbar");
         }
 
         static void ChargeLearning()

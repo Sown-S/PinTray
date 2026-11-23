@@ -17,6 +17,20 @@ namespace PinTray
         static readonly Color Green = Color.FromArgb(0x2E, 0xCC, 0x40);
         static readonly Color Red = Color.FromArgb(0xFF, 0x41, 0x36);
         static readonly Color Orange = Color.FromArgb(0xFF, 0x98, 0x00);
+        /// Yellow that stays readable: bright on a dark taskbar, deeper on a light one.
+        static readonly Color YellowOnDark = Color.FromArgb(0xFF, 0xD2, 0x3F);
+        static readonly Color YellowOnLight = Color.FromArgb(0xB8, 0x86, 0x00);
+        /// Level colours: white (or black on a light taskbar) above 50 %, yellow 30-50 %, red at 20 % and below.
+        public const int YellowAt = 50, RedAt = 20;
+        /// Icon text that stands for the full-battery drawing (shown instead of "100").
+        const string FullBattery = "FULL";
+
+        public static Color LevelColor(int percent, bool lightTaskbar)
+        {
+            if (percent <= RedAt) return Red;
+            if (percent <= YellowAt) return lightTaskbar ? YellowOnLight : YellowOnDark;
+            return lightTaskbar ? Color.Black : Color.White;
+        }
         /// Icon text that stands for the lightning-bolt drawing.
         const string Bolt = "⚡";
 
@@ -118,7 +132,7 @@ namespace PinTray
                 animIcons = new Icon[AnimFill.Length];
                 animHandles = new IntPtr[AnimFill.Length];
                 for (int i = 0; i < AnimFill.Length; i++)
-                    using (Bitmap bmp = RenderBolt(Red, AnimFill[i]))
+                    using (Bitmap bmp = RenderBolt(Green, AnimFill[i]))
                     {
                         animHandles[i] = bmp.GetHicon();
                         animIcons[i] = Icon.FromHandle(animHandles[i]);
@@ -302,7 +316,7 @@ namespace PinTray
                 string before = plugPercent >= 0 ? " (cắm lúc " + plugPercent + "%)" : "";
                 if (left <= 0)
                 {
-                    text = Bolt; color = Green;
+                    text = FullBattery; color = Green;
                     tip = name + ": ước tính đã sạc đầy";
                     status = "Ước tính đã sạc đầy" + before;
                     if (!fullNotified)
@@ -314,7 +328,7 @@ namespace PinTray
                 }
                 else
                 {
-                    text = Bolt; color = Red; animate = true;
+                    text = Bolt; color = Green; animate = true;
                     tip = name + ": đang sạc, đầy sau ~" + Hours(left / 60.0);
                     status = "Đang sạc" + before;
                 }
@@ -340,7 +354,7 @@ namespace PinTray
             }
             else
             {
-                text = r.Percent.ToString(CultureInfo.InvariantCulture);
+                text = r.Percent >= 100 ? FullBattery : r.Percent.ToString(CultureInfo.InvariantCulture);
                 string state = r.State == Reading.Charging ? "đang sạc" : r.State == Reading.OnPower ? "cắm nguồn" : "dùng pin";
                 if (!live) state = "đang ngủ, mức cuối";
                 tip = name + ": " + r.Percent + "% (" + state + ")";
@@ -348,8 +362,7 @@ namespace PinTray
                 status = "Pin " + r.Percent + "% – " + state;
                 if (!live) color = Color.Gray;
                 else if (r.State == Reading.Charging) color = Green;
-                else if (r.Percent <= 20) color = Red;
-                else color = App.LightTaskbar() ? Color.Black : Color.White;
+                else color = LevelColor(r.Percent, App.LightTaskbar());
 
                 // Low-battery notice at 20 % and 10 %, once each until charged.
                 if (r.State == Reading.Charging || r.Percent > 20) warnedAt = 101;
@@ -403,6 +416,25 @@ namespace PinTray
             }
         }
 
+        /// A full battery lying on its side: outlined body, terminal nub on the right, filled inside.
+        static void DrawFullBattery(Graphics g, Color color, Size sz)
+        {
+            float w = sz.Width, h = sz.Height;
+            float stroke = Math.Max(1.5f, h / 11f);
+            float bodyH = h * 0.56f, bodyW = w * 0.80f;
+            float x = (w - bodyW - w * 0.10f) / 2, y = (h - bodyH) / 2;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var pen = new Pen(color, stroke))
+            using (var brush = new SolidBrush(color))
+            {
+                g.DrawRectangle(pen, x + stroke / 2, y + stroke / 2, bodyW - stroke, bodyH - stroke);
+                float gap = stroke * 1.1f;
+                g.FillRectangle(brush, x + stroke + gap, y + stroke + gap, bodyW - 2 * (stroke + gap), bodyH - 2 * (stroke + gap));
+                float nubH = bodyH * 0.42f;
+                g.FillRectangle(brush, x + bodyW, y + (bodyH - nubH) / 2, w * 0.10f, nubH);
+            }
+        }
+
         public static Bitmap RenderBolt(Color color, float fill)
         {
             Size sz = SystemInformation.SmallIconSize;
@@ -424,6 +456,11 @@ namespace PinTray
             using (var brush = new SolidBrush(color))
             {
                 g.Clear(Color.Transparent);
+                if (text == FullBattery)
+                {
+                    DrawFullBattery(g, color, sz);
+                    return bmp;
+                }
                 if (text == Bolt)
                 {
                     DrawBolt(g, color, sz, 1f);

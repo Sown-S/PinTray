@@ -27,11 +27,13 @@ File không được ký số, nên Windows có thể hiện cảnh báo SmartSc
 
 | Hiển thị | Ý nghĩa |
 |---|---|
-| Số trắng / đen (theo màu taskbar) | Đang dùng pin |
-| Số đỏ | Pin ≤ 20%. Có thông báo ở mức 20% và 10% |
+| Viên pin đầy trắng / đen | Pin 100% |
+| Số trắng / đen (theo màu taskbar) | Pin 60–90% |
+| Số vàng | Pin 30–50% |
+| Số đỏ | Pin 10–20%. Có thông báo ở mức 20% và 10% |
 | Số xám | Thiết bị đang ngủ hoặc PinTray vừa mở. Hiện mức pin đã lưu |
-| ⚡ đỏ, đầy dần từ dưới lên | Đang cắm cáp sạc |
-| ⚡ xanh lá | Ước tính đã sạc đầy (có thông báo) |
+| ⚡ xanh lá, đầy dần từ dưới lên | Đang cắm cáp sạc |
+| Viên pin đầy xanh lá | Đang cắm cáp, ước tính đã sạc đầy (có thông báo) |
 | `!` cam | Receiver bị kẹt: thiết bị vẫn chạy nhưng không có gói pin. Rút ra rồi cắm lại receiver |
 | `?` | Chưa từng nhận được mức pin |
 | `–` | Không thấy receiver |
