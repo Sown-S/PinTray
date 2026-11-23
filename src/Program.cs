@@ -6,14 +6,14 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("PinTray")]
 [assembly: AssemblyProduct("PinTray")]
 [assembly: AssemblyDescription("Battery levels of wireless mice and keyboards in the notification area")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace PinTray
 {
     static class Program
     {
-        public const string Version = "1.0.0";
+        public const string Version = "1.1.0";
 
         [STAThread]
         static void Main(string[] args)
