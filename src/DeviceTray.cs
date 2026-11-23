@@ -416,22 +416,46 @@ namespace PinTray
             }
         }
 
-        /// A full battery lying on its side: outlined body, terminal nub on the right, filled inside.
+        /// Slate outline of the full-battery icon; the core takes the state colour.
+        static readonly Color BatteryOutline = Color.FromArgb(0x7C, 0x93, 0xA1);
+
+        static System.Drawing.Drawing2D.GraphicsPath Rounded(RectangleF r, float radius)
+        {
+            var p = new System.Drawing.Drawing2D.GraphicsPath();
+            float d = Math.Min(radius * 2, Math.Min(r.Width, r.Height));
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        /// A full battery standing upright (unlike Windows' own sideways one): rounded slate
+        /// outline, terminal on top, and a core in the state colour with a small gap around it.
         static void DrawFullBattery(Graphics g, Color color, Size sz)
         {
             float w = sz.Width, h = sz.Height;
-            float stroke = Math.Max(1.5f, h / 11f);
-            float bodyH = h * 0.56f, bodyW = w * 0.80f;
-            float x = (w - bodyW - w * 0.10f) / 2, y = (h - bodyH) / 2;
+            float stroke = Math.Max(1.5f, w / 11f);
+            float nubH = h * 0.10f;
+            float bodyW = w * 0.68f, bodyH = h - nubH - 1;
+            var body = new RectangleF((w - bodyW) / 2, nubH + 0.5f, bodyW, bodyH);
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using (var pen = new Pen(color, stroke))
-            using (var brush = new SolidBrush(color))
+            using (var outline = new Pen(BatteryOutline, stroke))
+            using (var outlineFill = new SolidBrush(BatteryOutline))
+            using (var core = new SolidBrush(color))
             {
-                g.DrawRectangle(pen, x + stroke / 2, y + stroke / 2, bodyW - stroke, bodyH - stroke);
-                float gap = stroke * 1.1f;
-                g.FillRectangle(brush, x + stroke + gap, y + stroke + gap, bodyW - 2 * (stroke + gap), bodyH - 2 * (stroke + gap));
-                float nubH = bodyH * 0.42f;
-                g.FillRectangle(brush, x + bodyW, y + (bodyH - nubH) / 2, w * 0.10f, nubH);
+                // Terminal: a small rounded cap centred on top.
+                float nubW = bodyW * 0.45f;
+                using (var nub = Rounded(new RectangleF((w - nubW) / 2, 0.5f, nubW, nubH + stroke), stroke * 0.6f))
+                    g.FillPath(outlineFill, nub);
+                var inset = RectangleF.Inflate(body, -stroke / 2, -stroke / 2);
+                using (var path = Rounded(inset, stroke * 1.4f))
+                    g.DrawPath(outline, path);
+                float gap = stroke * 0.7f;
+                var inner = RectangleF.Inflate(body, -(stroke + gap), -(stroke + gap));
+                using (var path = Rounded(inner, stroke * 0.7f))
+                    g.FillPath(core, path);
             }
         }
 
