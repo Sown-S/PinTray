@@ -433,6 +433,8 @@ namespace PinTray
                 var fmt = new StringFormat(StringFormat.GenericTypographic);
                 fmt.Alignment = StringAlignment.Center;
                 fmt.LineAlignment = StringAlignment.Center;
+                // One line, never wrapped: "100" once lost its last digit to a second, hidden line.
+                fmt.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.NoClip;
                 float size = sz.Height;
                 Font font = null;
                 while (size > 4)
@@ -440,7 +442,7 @@ namespace PinTray
                     if (font != null) font.Dispose();
                     font = new Font("Segoe UI", size, FontStyle.Bold, GraphicsUnit.Pixel);
                     SizeF m = g.MeasureString(text, font, 1000, fmt);
-                    if (m.Width <= sz.Width + 1 && m.Height <= sz.Height + 2) break;
+                    if (m.Width <= sz.Width && m.Height <= sz.Height + 2) break;
                     size -= 0.5f;
                 }
                 g.DrawString(text, font, brush, new RectangleF(0, 0, sz.Width, sz.Height + 1), fmt);
