@@ -1,4 +1,4 @@
-# Builds and tests PinTray on every push and pull request.
+﻿# Builds and tests PinTray on every push and pull request.
 # Pushing a tag such as v1.0.0 also publishes a GitHub release with PinTray.exe and its SHA-256,
 # so the released file is always built here from the tagged source, never on someone's PC.
 name: Build
@@ -16,7 +16,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build and test
         shell: pwsh
@@ -29,7 +29,7 @@ jobs:
           "$h  PinTray.exe" | Out-File dist/SHA256SUMS.txt -Encoding ascii
           Get-Content dist/SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PinTray
           path: |
