@@ -43,6 +43,21 @@ namespace PinTray
         DateTime wiredSince;
         bool reminded;
 
+        // Charging: level before the cable went in, the charge waiting for its level after, the model.
+        readonly ChargeModel charge;
+        int plugPercent = -1;
+        bool pendingCharge;
+        int pendingBefore;
+        double pendingMinutes;
+        DateTime unpluggedAt;
+        bool fullNotified;
+        /// While charging the bolt fills up again and again.
+        static readonly float[] AnimFill = { 0.2f, 0.4f, 0.6f, 0.8f, 1f, 1f };
+        readonly Timer anim = new Timer();
+        Icon[] animIcons;
+        IntPtr[] animHandles;
+        int animFrame;
+
         DateTime stuckUseSince = DateTime.MinValue; // first use seen during the current silence
         bool stuck, stuckWarned, watching;
         string watchMatch;
@@ -58,6 +73,9 @@ namespace PinTray
             if (ticks > 0) savedAt = new DateTime(ticks);
             est = new Estimator(key);
             est.Load();
+            charge = new ChargeModel(key);
+            anim.Interval = 350;
+            anim.Tick += delegate { NextFrame(); };
 
             var menu = new ContextMenuStrip();
             foreach (var item in new[] { statusItem, estimateItem, seenItem })
@@ -84,9 +102,45 @@ namespace PinTray
         {
             Save();
             if (watching) app.Watcher.Watch(watchMatch, false);
+            anim.Stop();
             tray.Visible = false;
             tray.Dispose();
             if (iconHandle != IntPtr.Zero) Native.DestroyIcon(iconHandle);
+            if (animHandles != null) foreach (IntPtr h in animHandles) Native.DestroyIcon(h);
+        }
+
+        /// Charging animation: a red bolt that fills from the bottom, over and over.
+        void StartAnim()
+        {
+            if (anim.Enabled) return;
+            if (animIcons == null)
+            {
+                animIcons = new Icon[AnimFill.Length];
+                animHandles = new IntPtr[AnimFill.Length];
+                for (int i = 0; i < AnimFill.Length; i++)
+                    using (Bitmap bmp = RenderBolt(Red, AnimFill[i]))
+                    {
+                        animHandles[i] = bmp.GetHicon();
+                        animIcons[i] = Icon.FromHandle(animHandles[i]);
+                    }
+            }
+            lastIconKey = "anim";
+            animFrame = 0;
+            NextFrame();
+            anim.Start();
+        }
+
+        void StopAnim()
+        {
+            if (!anim.Enabled) return;
+            anim.Stop();
+            lastIconKey = null; // the next Update draws the static icon
+        }
+
+        void NextFrame()
+        {
+            tray.Icon = animIcons[animFrame];
+            animFrame = (animFrame + 1) % animIcons.Length;
         }
 
         static string Hours(double h)
@@ -123,13 +177,21 @@ namespace PinTray
             // Cable in / out.
             if (s.Wired && !wasWired)
             {
-                wiredSince = now; reminded = false;
+                wiredSince = now; reminded = false; fullNotified = false;
+                // The level before charging, if it is recent enough to trust.
+                plugPercent = savedAt != DateTime.MinValue && (now - savedAt).TotalMinutes < 30 ? savedPercent : -1;
+                pendingCharge = false;
                 est.Reset();
                 warnedAt = 101;
                 Store.Log(name, "cam_cap_sac", savedPercent);
             }
             else if (!s.Wired && wasWired)
             {
+                // The first live level after this tells how far the charge got.
+                pendingCharge = true;
+                pendingBefore = plugPercent;
+                pendingMinutes = (now - wiredSince).TotalMinutes;
+                unpluggedAt = now;
                 Store.Log(name, "rut_cap", -1);
             }
             wasWired = s.Wired;
@@ -143,9 +205,16 @@ namespace PinTray
             }
 
             // A new live reading: save it, log it, count drops for the estimate.
+            if (pendingCharge && (now - unpluggedAt).TotalMinutes > 15) pendingCharge = false;
             if (live)
             {
                 Reading r = s.Last;
+                if (pendingCharge)
+                {
+                    pendingCharge = false;
+                    if (charge.Learn(pendingBefore, r.Percent, pendingMinutes))
+                        Store.Log(name, "hoc_thoi_gian_sac_day_" + Math.Round(charge.FullMinutes) + "_phut", r.Percent);
+                }
                 // A change seen right after a gap (PinTray closed, PC off) happened at an unknown time.
                 bool continuous = savedAt != DateTime.MinValue && (now - savedAt).TotalMinutes < 2;
                 if (r.Percent != savedPercent || r.State != savedState)
@@ -222,15 +291,34 @@ namespace PinTray
             if (has && !s.Wired)
                 estimate = hoursLeft > 0 ? "Còn khoảng " + Hours(hoursLeft) + " dùng" : "Thời gian còn lại: chưa đủ dữ liệu";
 
+            bool animate = false;
             if (s.Wired)
             {
-                // On the cable the device may send no level: show a bolt, keep the last wireless level.
-                text = Bolt; color = Green;
-                string before = has ? " – trước khi cắm " + r.Percent + "%" : "";
-                tip = name + ": đang sạc qua cáp" + before;
-                status = "Đang sạc qua cáp" + before;
-                estimate = "Đã cắm " + Hours((now - wiredSince).TotalHours)
-                    + (app.RemindMinutes > 0 ? ", nhắc rút sau " + Hours(app.RemindMinutes / 60.0) : "");
+                // On the cable the device sends no level and no "full": estimate it from past charges.
+                double elapsed = (now - wiredSince).TotalMinutes;
+                double fallback = app.RemindMinutes > 0 ? app.RemindMinutes : 120;
+                double left = charge.MinutesLeft(plugPercent, elapsed, fallback);
+                string basis = charge.FullMinutes > 0 ? "theo các lần sạc trước" : "chưa có dữ liệu, tạm tính " + Hours(fallback / 60.0) + " cho cả lần sạc";
+                string before = plugPercent >= 0 ? " (cắm lúc " + plugPercent + "%)" : "";
+                if (left <= 0)
+                {
+                    text = Bolt; color = Green;
+                    tip = name + ": ước tính đã sạc đầy";
+                    status = "Ước tính đã sạc đầy" + before;
+                    if (!fullNotified)
+                    {
+                        fullNotified = true;
+                        tray.ShowBalloonTip(8000, "Có lẽ đã sạc đầy", name + " đã sạc " + Hours(elapsed / 60.0)
+                            + " (ước tính " + basis + "). Đèn trên chuột chuyển xanh là đầy thật.", ToolTipIcon.Info);
+                    }
+                }
+                else
+                {
+                    text = Bolt; color = Red; animate = true;
+                    tip = name + ": đang sạc, đầy sau ~" + Hours(left / 60.0);
+                    status = "Đang sạc" + before;
+                }
+                estimate = (left > 0 ? "Ước tính đầy sau ~" + Hours(left / 60.0) : "Đã cắm " + Hours(elapsed / 60.0)) + " (" + basis + ")";
             }
             else if (!s.Present)
             {
@@ -280,6 +368,8 @@ namespace PinTray
             vendorItem.Text = "Mở app " + name;
             vendorItem.Tag = s.VendorApp;
 
+            if (animate) { StartAnim(); return; }
+            StopAnim();
             string iconKey = text + "|" + color.ToArgb();
             if (iconKey == lastIconKey) return;
             lastIconKey = iconKey;
@@ -291,7 +381,8 @@ namespace PinTray
             tray.ShowBalloonTip(5000, "Sắp hết pin", name + " còn " + pct + "%. Hãy sạc.", ToolTipIcon.Warning);
         }
 
-        static void DrawBolt(Graphics g, Brush brush, Size sz)
+        /// Draws the bolt; with fill below 1 only the bottom part is bright, the rest dimmed.
+        static void DrawBolt(Graphics g, Color color, Size sz, float fill)
         {
             // Bolt in a 0..1 box, then scaled to the icon (a little narrower than tall).
             float[,] p = { { 0.62f, 0.00f }, { 0.16f, 0.58f }, { 0.46f, 0.58f }, { 0.36f, 1.00f },
@@ -301,7 +392,27 @@ namespace PinTray
             var pts = new PointF[p.GetLength(0)];
             for (int i = 0; i < pts.Length; i++) pts[i] = new PointF(ox + p[i, 0] * w, p[i, 1] * h);
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            g.FillPolygon(brush, pts);
+            using (var bright = new SolidBrush(color))
+            {
+                if (fill >= 1) { g.FillPolygon(bright, pts); return; }
+                using (var dim = new SolidBrush(Color.FromArgb(90, color)))
+                    g.FillPolygon(dim, pts);
+                g.SetClip(new RectangleF(0, h * (1 - fill), sz.Width, h * fill));
+                g.FillPolygon(bright, pts);
+                g.ResetClip();
+            }
+        }
+
+        public static Bitmap RenderBolt(Color color, float fill)
+        {
+            Size sz = SystemInformation.SmallIconSize;
+            var bmp = new Bitmap(sz.Width, sz.Height);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.Transparent);
+                DrawBolt(g, color, sz, fill);
+            }
+            return bmp;
         }
 
         /// Draws the icon: a number (or symbol) as large as fits, or the bolt.
@@ -315,7 +426,7 @@ namespace PinTray
                 g.Clear(Color.Transparent);
                 if (text == Bolt)
                 {
-                    DrawBolt(g, brush, sz);
+                    DrawBolt(g, color, sz, 1f);
                     return bmp;
                 }
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;

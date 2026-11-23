@@ -93,6 +93,53 @@ namespace PinTray
         }
     }
 
+    /// Learns how long a full charge takes, from charges whose level is known before plugging the
+    /// cable in and right after pulling it out (the device sends no level while on the cable).
+    class ChargeModel
+    {
+        readonly string device;
+        /// Minutes for 0 -> 100 %; 0 = nothing learned yet.
+        public double FullMinutes;
+        /// True when measured from a charge that ended below 100 %; false when only an upper
+        /// bound is known (the charge reached 100 % at some unknown moment before unplugging).
+        public bool Exact;
+
+        public ChargeModel(string device)
+        {
+            this.device = device;
+            FullMinutes = Store.GetDouble(device, "ChargeFullMinutes", 0);
+            Exact = Store.GetInt(device, "ChargeFullExact", 0) == 1;
+        }
+
+        /// One charge: level before, level after, minutes on the cable. Returns true if it taught something.
+        public bool Learn(int before, int after, double minutes)
+        {
+            if (before < 0 || after <= before || minutes < 3) return false;
+            if (after < 100)
+            {
+                double full = minutes * 100.0 / (after - before);
+                FullMinutes = Exact && FullMinutes > 0 ? (FullMinutes + full) / 2 : full;
+                Exact = true;
+            }
+            else
+            {
+                double bound = minutes * 100.0 / (100 - before);
+                if (FullMinutes <= 0 || bound < FullMinutes) FullMinutes = bound;
+                else return false;
+            }
+            Store.Set(device, "ChargeFullMinutes", Math.Round(FullMinutes, 1));
+            Store.Set(device, "ChargeFullExact", Exact ? 1 : 0);
+            return true;
+        }
+
+        /// Minutes still needed when the charge started at `before` % (unknown: -1) and has run `elapsed` minutes.
+        public double MinutesLeft(int before, double elapsed, double fallbackFull)
+        {
+            double full = FullMinutes > 0 ? FullMinutes : fallbackFull;
+            return (100 - Math.Max(0, before)) / 100.0 * full - elapsed;
+        }
+    }
+
     /// Estimates the time left from how long each level step took while the device was awake.
     /// Devices that report in steps of 10 % give a rate only after the level dropped twice.
     class Estimator

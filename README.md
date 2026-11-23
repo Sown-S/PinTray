@@ -30,7 +30,8 @@ File không được ký số, nên Windows có thể hiện cảnh báo SmartSc
 | Số trắng / đen (theo màu taskbar) | Đang dùng pin |
 | Số đỏ | Pin ≤ 20%. Có thông báo ở mức 20% và 10% |
 | Số xám | Thiết bị đang ngủ hoặc PinTray vừa mở. Hiện mức pin đã lưu |
-| ⚡ xanh lá | Đang cắm cáp sạc |
+| ⚡ đỏ, đầy dần từ dưới lên | Đang cắm cáp sạc |
+| ⚡ xanh lá | Ước tính đã sạc đầy (có thông báo) |
 | `!` cam | Receiver bị kẹt: thiết bị vẫn chạy nhưng không có gói pin. Rút ra rồi cắm lại receiver |
 | `?` | Chưa từng nhận được mức pin |
 | `–` | Không thấy receiver |
@@ -48,6 +49,7 @@ File không được ký số, nên Windows có thể hiện cảnh báo SmartSc
 
 - **Nhớ mức pin:** lưu trong `HKCU\Software\PinTray`. Sau khi khởi động lại máy, PinTray hiện ngay mức cũ (màu xám) cho đến khi thiết bị trả lời.
 - **Lịch sử:** `%LOCALAPPDATA%\PinTray\history.csv` ghi mỗi lần mức pin đổi, mỗi lần cắm / rút cáp và mỗi lần receiver bị kẹt.
+- **Ước tính thời gian sạc đầy:** khi cắm cáp, chuột không báo % pin hay trạng thái đầy. PinTray học từ các lần sạc trước: mức pin trước khi cắm, thời gian cắm, và mức pin ngay sau khi rút. Lần sạc đầu tiên chưa có dữ liệu nên tạm tính bằng thời gian *Nhắc rút sạc* (mặc định 2 giờ). Đèn trên chuột vẫn là chỉ báo chính xác.
 - **Ước tính thời gian còn lại:** chỉ tính thời gian thiết bị *thức*. Với thiết bị báo pin theo nấc 10%, phải đợi pin tụt hai nấc mới có số. Mỗi lần sạc, ước tính bắt đầu lại.
 - **Phát hiện receiver kẹt:** khi receiver im lặng, PinTray dùng Raw Input để xem *riêng* thiết bị đó có đang được dùng không. Nó chỉ xem tên thiết bị, không xem nội dung gõ. Phần này chỉ bật lúc receiver im lặng.
 

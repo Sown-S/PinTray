@@ -17,6 +17,7 @@ namespace PinTray.Tests
         {
             AttackShark();
             Estimate();
+            ChargeLearning();
             Console.WriteLine(fails == 0 ? "All tests passed." : fails + " test(s) failed.");
             return fails == 0 ? 0 : 1;
         }
@@ -35,6 +36,33 @@ namespace PinTray.Tests
             Check(!AttackSharkDriver.Decode(new byte[] { 3, 0x10, 0x40, 1, 200 }, 5, out r, out model), "level over 100 is rejected");
             Check(!AttackSharkDriver.Decode(new byte[] { 3, 0x10, 0x40 }, 3, out r, out model), "short frame is rejected");
             Check(AttackSharkDriver.ModelName(0x10) == "Attack Shark R1", "model marker 10 = R1");
+        }
+
+        static void ChargeLearning()
+        {
+            const string key = "pintray-test-charge";
+            Store.DeleteDevice(key);
+            try
+            {
+                var c = new ChargeModel(key);
+                Check(Math.Abs(c.MinutesLeft(40, 0, 120) - 72) < 0.01, "charge: no data, fallback 120 min from 40 % = 72 min");
+                Check(!c.Learn(-1, 80, 60), "charge: unknown level before, nothing learned");
+                Check(!c.Learn(50, 60, 2), "charge: too short to learn");
+
+                // Reached 100 % at an unknown time: only an upper bound (50 -> 100 within 60 min = full in 120 min at most).
+                Check(c.Learn(50, 100, 60) && !c.Exact && Math.Abs(c.FullMinutes - 120) < 0.01, "charge: 100 % after unplug gives an upper bound");
+                Check(c.Learn(50, 100, 45) && Math.Abs(c.FullMinutes - 90) < 0.01, "charge: a tighter bound replaces it");
+                Check(!c.Learn(50, 100, 80), "charge: a looser bound is ignored");
+
+                // Unplugged below 100 %: a measured rate (20 -> 60 in 40 min = 100 min for a full charge).
+                Check(c.Learn(20, 60, 40) && c.Exact && Math.Abs(c.FullMinutes - 100) < 0.01, "charge: measured rate wins over the bound");
+                Check(c.Learn(30, 80, 40) && Math.Abs(c.FullMinutes - 90) < 0.01, "charge: measured rates are averaged");
+                Check(Math.Abs(c.MinutesLeft(40, 30, 120) - 24) < 0.01, "charge: 40 % after 30 min of a 90-min charge = 24 min left");
+
+                var loaded = new ChargeModel(key);
+                Check(loaded.Exact && Math.Abs(loaded.FullMinutes - 90) < 0.01, "charge: survives save and load");
+            }
+            finally { Store.DeleteDevice(key); }
         }
 
         static void Estimate()
